@@ -294,6 +294,16 @@ export function CopilotSidebar({
   // Universal cross-genre shortcuts + active genre shortcuts
   const quickShortcuts = [
     {
+      label: "Make It Better",
+      prompt:
+        "Review and improve this entire document. Upgrade clarity, structure, headings, callouts, and formatting while preserving every key fact and detail.",
+    },
+    {
+      label: "Expand Writing",
+      prompt:
+        "Expand the writing in this document with deeper detail, concrete examples, richer explanations, and comprehensive section coverage.",
+    },
+    {
       label: "Expand Scene",
       prompt:
         "Expand the current scene or section with vivid detail, stronger pacing, and deeper context.",
@@ -312,7 +322,7 @@ export function CopilotSidebar({
       (s) =>
         !["Expand Scene", "Generate Steps", "Add Dialogue"].includes(s.label)
     ),
-  ].slice(0, 5);
+  ].slice(0, 6);
 
   return (
     <aside className="flex flex-col h-full bg-[#0d0f12] border-l border-neutral-800/90 text-neutral-200 select-none">
@@ -486,6 +496,18 @@ export function CopilotSidebar({
                   >
                     <Check className="w-3.5 h-3.5 stroke-[2.5]" />
                     ✓ Apply to Document
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isStreaming || !streamedMarkdown.trim()}
+                    onClick={() => {
+                      onApplyDraft(streamedMarkdown, "replace");
+                      setAppliedBanner("Replaced document with improved version");
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-200 border border-emerald-500/35 transition-all disabled:opacity-40 cursor-pointer"
+                  >
+                    <span>⟳ Replace Whole Doc</span>
                   </button>
 
                   <button

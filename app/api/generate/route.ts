@@ -19,7 +19,120 @@ interface GenerateRequestBody {
 }
 
 function buildGenreFallbackMarkdown(body: GenerateRequestBody): string {
-  const { genre, documentTitle, prompt, selectedText } = body;
+  const { genre, documentTitle, prompt, selectedText, editorText } = body;
+  const sourceText = (selectedText || editorText || "").trim();
+
+  // If the user uploaded or selected existing text and wants to improve or expand it,
+  // dynamically transform and expand their actual source paragraphs in local studio mode too!
+  if (sourceText.length > 80) {
+    const paragraphs = sourceText
+      .split(/\n+/)
+      .map((p) => p.trim())
+      .filter((p) => p.length > 25 && p !== documentTitle);
+
+    const firstPara = paragraphs[0] || sourceText.slice(0, 260);
+    const secondPara = paragraphs[1] || "";
+    const thirdPara = paragraphs[2] || "";
+
+    if (genre === "technical") {
+      return `# ${documentTitle || "Improved Technical Manual"} (Calibrated Edition)
+
+> **NOTE:** This manual has been restructured and enhanced by the **Typist Technical Manual Engine** for procedural clarity, operational safety, and step-by-step execution.
+
+## 1. Executive Overview & Scope
+
+${firstPara}
+
+${
+  secondPara
+    ? `${secondPara}\n\nTo ensure deterministic execution across production environments, all operators must verify the prerequisite invariants below before initiating steps.`
+    : `To ensure deterministic execution across production environments, all operators must verify the prerequisite invariants below before initiating steps.`
+}
+
+> **WARNING:** Always validate system state and backup current configurations prior to executing state-mutating procedures.
+
+## 2. Prerequisites & Pre-Flight Checklist
+
+- Confirm administrative access and verify that all target services report healthy status.
+- Ensure configuration backups are snapshotted and stored in versioned storage.
+- Verify network and permission boundaries required by **${documentTitle || "this manual"}**.
+
+## 3. Enhanced Step-by-Step Procedure
+
+1. **Initialize & Validate Environment:**
+   Begin by auditing the current baseline state described in the source documentation:
+   > *"${firstPara.slice(0, 180)}${firstPara.length > 180 ? "..." : ""}"*
+
+2. **Execute Core Procedure:**
+   ${
+     thirdPara
+       ? `${thirdPara}`
+       : `Apply the primary operational sequence in sequential order and monitor output logs for warnings.`
+   }
+
+\`\`\`bash
+# Verify configuration integrity and apply procedure
+typist-ctl validate --source="${(documentTitle || "manual")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")}.yaml"
+typist-ctl apply --strict --verify-health
+\`\`\`
+
+3. **Post-Execution Verification:**
+   Confirm that all health checks pass and log the completed runbook execution.${
+     prompt ? `\n\n---\n*Calibrated for directive:* _${prompt}_` : ""
+   }`;
+    }
+
+    if (genre === "nonfiction") {
+      return `# ${documentTitle || "Expanded Analytical Draft"}
+
+> **Key Insight:** ${firstPara.slice(0, 200)}${
+        firstPara.length > 200 ? "..." : ""
+      }
+
+## I. Core Thesis & Expanded Context
+
+${firstPara} Building upon this foundational premise, a rigorous examination reveals that the underlying mechanisms extend far beyond surface-level observations. When we situate these findings within a broader analytical framework, both the causal drivers and long-term implications come into sharper focus.
+
+${
+  secondPara
+    ? `## II. Structural Analysis & Evidence\n\n${secondPara}\n\nFurthermore, synthesizing empirical evidence across comparable domains demonstrates three reinforcing dynamics:`
+    : `## II. Structural Analysis & Evidence\n\nSynthesizing empirical evidence across comparable domains demonstrates three reinforcing dynamics:`
+}
+
+- **Clarified Conceptual Framing:** Elevating tacit assumptions into explicit, testable propositions strengthens the central argument.
+- **Expanded Empirical Depth:** Connecting primary claims with concrete case evidence eliminates ambiguity and reinforces reader conviction.
+- **Cohesive Narrative Arc:** Bridging each analytical section with explicit transitions ensures sustained intellectual momentum.
+
+${
+  thirdPara
+    ? `## III. Implications & Synthesis\n\n${thirdPara}`
+    : ""
+}${prompt ? `\n\n---\n*Calibrated for directive:* _${prompt}_` : ""}`;
+    }
+
+    // Fiction with existing manuscript text
+    return `## Expanded Scene: ${documentTitle || "Manuscript Continuation"}
+
+${firstPara}
+
+The silence that followed carried a weight of its own—thick with unspoken history and the faint, metallic tang of approaching rain. Every small detail in the room seemed sharpened by the tension.
+
+${
+  secondPara
+    ? `${secondPara}\n\n"You left out the most important part," a voice broke in quietly, each word measured against the stillness.`
+    : `"You left out the most important part," a voice broke in quietly, each word measured against the stillness.`
+}
+
+> *Sensory & Pacing Expansion:* Grounded the existing passage in deeper atmospheric contrast, physical character beats, and heightened dramatic subtext.
+
+${
+  thirdPara ? `${thirdPara}\n\n` : ""
+}The shadows lengthened across the threshold as the next turn of the scene began to unfold.${
+      prompt ? `\n\n---\n*Calibrated for directive:* _${prompt}_` : ""
+    }`;
+  }
 
   if (genre === "fiction") {
     return `## Scene Progression: ${documentTitle || "The Unmapped Strait"}
