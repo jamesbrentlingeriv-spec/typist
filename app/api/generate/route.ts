@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { DocumentGenre, GENRE_ENGINE } from "@/lib/genres";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 interface GenerateRequestBody {
   prompt: string;
