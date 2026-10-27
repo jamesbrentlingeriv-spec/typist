@@ -16,6 +16,8 @@ import {
   Upload,
   Loader2,
   Sparkles,
+  FileText,
+  Eye,
 } from "lucide-react";
 import {
   DocumentGenre,
@@ -34,8 +36,13 @@ import {
 import {
   DocumentEditor,
   DocumentEditorHandle,
+  markdownToHtml,
 } from "@/components/editor/DocumentEditor";
 import { CopilotSidebar } from "@/components/ai/CopilotSidebar";
+import {
+  downloadDocumentAsPdf,
+  createPdfPreviewUrl,
+} from "@/lib/pdf-export";
 
 export default function DocumentWorkspacePage() {
   const params = useParams<{ id: string }>();
@@ -55,6 +62,8 @@ export default function DocumentWorkspacePage() {
   const [shareCopied, setShareCopied] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportCopied, setExportCopied] = useState(false);
+  const [viewMode, setViewMode] = useState<"editor" | "pdf">("editor");
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
 
   // In-Workspace File Upload State (PDF, DOCX, DOC, MD, TXT)
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -100,6 +109,21 @@ export default function DocumentWorkspacePage() {
     return () => clearTimeout(timer);
   }, []);
 
+  // Keep Live PDF Preview URL synced when in PDF View Mode
+  useEffect(() => {
+    if (!doc || viewMode !== "pdf") return;
+    const htmlSource = editorRef.current?.getHtml() || doc.content;
+    const url = createPdfPreviewUrl({
+      title: doc.title,
+      genre: doc.genre,
+      html: htmlSource,
+    });
+    setPdfPreviewUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [doc, viewMode]);
+
   if (!doc) {
     return (
       <div className="min-h-screen bg-[#000000] flex items-center justify-center text-neutral-400 text-sm">
@@ -107,6 +131,17 @@ export default function DocumentWorkspacePage() {
       </div>
     );
   }
+
+  const handleDownloadPdf = (markdownOverride?: string) => {
+    const htmlSource = markdownOverride
+      ? markdownToHtml(markdownOverride)
+      : editorRef.current?.getHtml() || doc.content;
+    downloadDocumentAsPdf({
+      title: doc.title,
+      genre: doc.genre,
+      html: htmlSource,
+    });
+  };
 
   const handleTitleChange = (newTitle: string) => {
     const next = { ...doc, title: newTitle };
@@ -376,64 +411,99 @@ export default function DocumentWorkspacePage() {
             <span className="hidden sm:inline">Upload PDF / DOC</span>
           </button>
 
-          {/* Share Button */}
+          {/* Toggle Editor vs Live PDF Preview */}
           <button
             type="button"
-            onClick={() => {
-              if (typeof window !== "undefined") {
-                navigator.clipboard?.writeText(window.location.href);
-                setShareCopied(true);
-                setTimeout(() => setShareCopied(false), 1800);
-              }
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#16191f] hover:bg-neutral-800 text-xs font-medium text-neutral-200 border border-neutral-800 transition-all cursor-pointer"
+            onClick={() =>
+              setViewMode((prev) => (prev === "editor" ? "pdf" : "editor"))
+            }
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+              viewMode === "pdf"
+                ? "bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-[0_0_12px_rgba(245,158,11,0.25)]"
+                : "bg-[#16191f] hover:bg-neutral-800 text-neutral-200 border-neutral-800"
+            }`}
           >
-            {shareCopied ? (
-              <>
-                <Check className="w-3.5 h-3.5 text-emerald-400" />
-                <span className="text-emerald-300">Link Copied</span>
-              </>
-            ) : (
-              <>
-                <Share2 className="w-3.5 h-3.5 text-neutral-400" />
-                <span className="hidden sm:inline">Share</span>
-              </>
-            )}
+            <Eye className="w-3.5 h-3.5 text-amber-400" />
+            <span>{viewMode === "pdf" ? "Edit Text" : "PDF Preview"}</span>
           </button>
 
-          {/* Vibrant Export Button */}
+          {/* Direct 1-Click Save as PDF Button */}
+          <button
+            type="button"
+            onClick={() => handleDownloadPdf()}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold shadow-[0_0_16px_rgba(245,158,11,0.4)] transition-all cursor-pointer"
+          >
+            <FileDown className="w-3.5 h-3.5 stroke-[2.5]" />
+            <span>Save PDF</span>
+          </button>
+
+          {/* More Export Formats Button */}
           <button
             type="button"
             onClick={() => setShowExportModal(true)}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold shadow-[0_0_16px_rgba(245,158,11,0.4)] transition-all cursor-pointer"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#16191f] hover:bg-neutral-800 text-xs font-medium text-neutral-300 border border-neutral-800 transition-all cursor-pointer"
+            title="More Export Formats (.pdf, .md, .html)"
           >
-            <Download className="w-3.5 h-3.5 stroke-[2.5]" />
-            <span>Export</span>
+            <Download className="w-3.5 h-3.5" />
           </button>
         </div>
       </header>
 
-      {/* MAIN STUDIO SPLIT VIEW: Left 65% Editor Canvas | Right 35% AI Co-Writer Sidebar */}
+      {/* MAIN STUDIO SPLIT VIEW: Left 65% Editor or Live PDF Viewer | Right 35% AI Co-Writer Sidebar */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Editor Canvas (Left Pane - 65%) */}
+        {/* Editor Canvas / Live PDF Preview (Left Pane - 65%) */}
         <div className="w-full lg:w-[65%] h-full overflow-hidden flex flex-col">
-          <DocumentEditor
-            ref={editorRef}
-            initialContent={doc.content}
-            genre={doc.genre}
-            targetWords={doc.targetWords}
-            onUpdateContent={handleEditorContentUpdate}
-            onSelectionChange={setSelectedEditorText}
-            onUpdateTargetWords={handleTargetWordsUpdate}
-            onQuickSendSelectionToAI={(snippet) => {
-              setSelectedEditorText(snippet);
-              setInitialPromptToRun(
-                `Refine and elevate this selected passage in ${
-                  GENRE_ENGINE[doc.genre].label
-                } style: "${snippet.slice(0, 200)}"`
-              );
-            }}
-          />
+          {viewMode === "pdf" && pdfPreviewUrl ? (
+            <div className="flex flex-col h-full bg-[#090b0e]">
+              <div className="px-5 py-2.5 bg-[#0d0f12] border-b border-neutral-800 flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-amber-400" />
+                  <span className="font-semibold text-white">
+                    Live PDF Document Preview ({doc.title}.pdf)
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode("editor")}
+                    className="px-3 py-1 rounded-lg bg-[#16191f] hover:bg-neutral-800 text-neutral-200 border border-neutral-700 font-medium cursor-pointer"
+                  >
+                    Switch to Rich Text Editor
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadPdf()}
+                    className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-bold cursor-pointer"
+                  >
+                    ⬇ Download .PDF
+                  </button>
+                </div>
+              </div>
+              <iframe
+                src={pdfPreviewUrl}
+                title="Live PDF Document Preview"
+                className="w-full flex-1 border-0 bg-neutral-900"
+              />
+            </div>
+          ) : (
+            <DocumentEditor
+              ref={editorRef}
+              initialContent={doc.content}
+              genre={doc.genre}
+              targetWords={doc.targetWords}
+              onUpdateContent={handleEditorContentUpdate}
+              onSelectionChange={setSelectedEditorText}
+              onUpdateTargetWords={handleTargetWordsUpdate}
+              onQuickSendSelectionToAI={(snippet) => {
+                setSelectedEditorText(snippet);
+                setInitialPromptToRun(
+                  `Refine and elevate this selected passage in ${
+                    GENRE_ENGINE[doc.genre].label
+                  } style: "${snippet.slice(0, 200)}"`
+                );
+              }}
+            />
+          )}
         </div>
 
         {/* AI Co-Writer Sidebar (Right Pane - 35%) */}
@@ -473,14 +543,32 @@ export default function DocumentWorkspacePage() {
             }}
             history={doc.history || []}
             onAddHistory={handleAddHistory}
-            getEditorPlainText={() => editorRef.current?.getPlainText() || ""}
+            getEditorPlainText={() => {
+              const fromEditor = editorRef.current?.getPlainText() || "";
+              if (fromEditor.trim()) return fromEditor;
+              return (doc.content || "")
+                .replace(/<\/(h1|h2|h3|p|li|blockquote|pre)>/gi, "\n\n")
+                .replace(/<[^>]*>/g, " ")
+                .replace(/[ \t]+/g, " ")
+                .replace(/\n{3,}/g, "\n\n")
+                .trim();
+            }}
             selectedEditorText={selectedEditorText}
             onApplyDraft={(markdown, mode) => {
               editorRef.current?.applyDraftToDoc(markdown, mode);
+              const convertedHtml = markdownToHtml(markdown);
+              const updatedHtml =
+                mode === "replace"
+                  ? convertedHtml
+                  : `${editorRef.current?.getHtml() || doc.content}\n${convertedHtml}`;
+              const next = { ...doc, content: updatedHtml };
+              setDoc(next);
+              persistUpdate(next);
             }}
             onUndoDraft={() => {
               editorRef.current?.undoLastChange();
             }}
+            onExportPdf={(mdOverride) => handleDownloadPdf(mdOverride)}
             initialPromptToRun={initialPromptToRun}
             onClearInitialPrompt={handleClearInitialPrompt}
           />
@@ -494,7 +582,7 @@ export default function DocumentWorkspacePage() {
             <div className="px-5 py-4 bg-[#16191f] border-b border-neutral-800 flex items-center justify-between">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <FileDown className="w-4 h-4 text-amber-400" />
-                Export Calibrated Manuscript
+                Export Calibrated Document
               </h3>
               <button
                 type="button"
@@ -514,6 +602,25 @@ export default function DocumentWorkspacePage() {
               </p>
 
               <div className="grid grid-cols-1 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleDownloadPdf();
+                    setShowExportModal(false);
+                  }}
+                  className="flex items-center justify-between p-3.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/45 text-left transition-all cursor-pointer"
+                >
+                  <div>
+                    <div className="font-bold text-amber-200">
+                      PDF Document (.pdf) — Recommended
+                    </div>
+                    <div className="text-[11px] text-neutral-300">
+                      Typeset multi-page PDF with headers, callout boxes, code
+                      blocks, and page numbers
+                    </div>
+                  </div>
+                  <FileDown className="w-4 h-4 text-amber-400 shrink-0" />
+                </button>
                 <button
                   type="button"
                   onClick={() => handleExportDownload("md")}

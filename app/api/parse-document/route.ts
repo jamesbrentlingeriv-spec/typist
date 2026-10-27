@@ -13,9 +13,251 @@ function escapeHtml(str: string): string {
     .replace(/>/g, "&gt;");
 }
 
+interface PdfTextLine {
+  y: number;
+  fontSize: number;
+  text: string;
+}
+
 /**
- * Converts raw extracted text (e.g. from a PDF manual or plain text file)
- * into clean, structured HTML suitable for the TipTap rich-text editor.
+ * Extracts layout-aware structured text and HTML from a PDF using PDF.js text items
+ * (preserving font-size headings, vertical paragraph gaps, lists, and multi-page structure).
+ */
+async function extractStructuredPdf(
+  arrayBuffer: ArrayBuffer,
+  cleanTitle: string
+): Promise<{
+  pageCount: number;
+  plainText: string;
+  html: string;
+}> {
+  const pdfProxy = await getDocumentProxy(new Uint8Array(arrayBuffer));
+  const pageCount = pdfProxy.numPages;
+
+  const allPagesPlainText: string[] = [];
+  const htmlParts: string[] = [`<h1>${escapeHtml(cleanTitle)}</h1>`];
+
+  try {
+    for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+      const page = await pdfProxy.getPage(pageNum);
+      const textContent = await page.getTextContent();
+      const rawItems = (textContent.items || []) as Array<{
+        str?: string;
+        transform?: number[];
+        hasEOL?: boolean;
+      }>;
+
+      const lines: PdfTextLine[] = [];
+      let currentLineText = "";
+      let currentY: number | null = null;
+      let currentFontSize = 11;
+
+      for (const item of rawItems) {
+        const str = item.str ?? "";
+        if (!str.trim() && !currentLineText) continue;
+
+        const y = item.transform ? Math.round(item.transform[5]) : 0;
+        const fontSize = item.transform
+          ? Math.round(Math.abs(item.transform[0] || item.transform[3] || 11))
+          : 11;
+
+        if (currentY === null) {
+          currentY = y;
+          currentFontSize = fontSize;
+          currentLineText = str;
+        } else if (Math.abs(y - currentY) <= 4) {
+          // Same horizontal line on the PDF page
+          const needsSpace =
+            currentLineText.length > 0 &&
+            !currentLineText.endsWith(" ") &&
+            !currentLineText.endsWith("-") &&
+            !str.startsWith(" ") &&
+            !/^[.,;:!?)]/.test(str);
+          currentLineText += (needsSpace ? " " : "") + str;
+          if (fontSize > currentFontSize) currentFontSize = fontSize;
+        } else {
+          if (currentLineText.trim()) {
+            lines.push({
+              y: currentY,
+              fontSize: currentFontSize,
+              text: currentLineText.trim(),
+            });
+          }
+          currentY = y;
+          currentFontSize = fontSize;
+          currentLineText = str;
+        }
+      }
+
+      if (currentLineText.trim() && currentY !== null) {
+        lines.push({
+          y: currentY,
+          fontSize: currentFontSize,
+          text: currentLineText.trim(),
+        });
+      }
+
+      if (lines.length === 0) continue;
+
+      // Calculate median body font size on this page
+      const sortedSizes = lines
+        .map((l) => l.fontSize)
+        .sort((a, b) => a - b);
+      const medianSize =
+        sortedSizes[Math.floor(sortedSizes.length / 2)] || 11;
+
+      // Group lines into semantic paragraphs, headings, and lists based on Y-distance and font size
+      let paragraphBuffer: string[] = [];
+      let listBuffer: { type: "ul" | "ol"; items: string[] } | null = null;
+      const pagePlainParagraphs: string[] = [];
+
+      const flushParagraph = () => {
+        if (paragraphBuffer.length > 0) {
+          const joined = paragraphBuffer
+            .join(" ")
+            .replace(/-\s+/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+          if (joined) {
+            htmlParts.push(`<p>${escapeHtml(joined)}</p>`);
+            pagePlainParagraphs.push(joined);
+          }
+          paragraphBuffer = [];
+        }
+      };
+
+      const flushList = () => {
+        if (listBuffer && listBuffer.items.length > 0) {
+          const lis = listBuffer.items
+            .map((it) => `<li>${escapeHtml(it)}</li>`)
+            .join("");
+          htmlParts.push(`<${listBuffer.type}>${lis}</${listBuffer.type}>`);
+          pagePlainParagraphs.push(
+            listBuffer.items
+              .map((it, idx) =>
+                listBuffer?.type === "ol" ? `${idx + 1}. ${it}` : `• ${it}`
+              )
+              .join("\n")
+          );
+          listBuffer = null;
+        }
+      };
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const prevLine = i > 0 ? lines[i - 1] : null;
+        const verticalGap = prevLine ? Math.abs(prevLine.y - line.y) : 0;
+
+        // Skip standalone page numbers at very top/bottom
+        if (/^(page\s+)?\d+(\s+of\s+\d+)?$/i.test(line.text) && lines.length > 3) {
+          continue;
+        }
+
+        const isBullet = /^[-•▪▸*]\s+/.test(line.text);
+        const isNumbered = /^\d+[.)]\s+/.test(line.text);
+        const isCallout =
+          /^(warning|caution|important|note|tip|prerequisite|danger)\s*[:—-]/i.test(
+            line.text
+          );
+        const isHeadingBySize =
+          line.fontSize >= medianSize + 2 && line.text.length < 110;
+        const isHeadingByPattern =
+          line.text.length < 85 &&
+          !line.text.endsWith(".") &&
+          (/^(chapter|section|part|appendix|module)\s+[\divx]+/i.test(
+            line.text
+          ) ||
+            /^\d+(\.\d+)*\s+[A-Z]/.test(line.text) ||
+            /^(overview|prerequisites|installation|configuration|troubleshooting|introduction|conclusion|summary|specifications|procedure|safety|maintenance)$/i.test(
+              line.text.trim()
+            ));
+
+        if (isHeadingBySize || isHeadingByPattern) {
+          flushParagraph();
+          flushList();
+          const tag = line.fontSize >= medianSize + 5 ? "h2" : "h2";
+          htmlParts.push(`<${tag}>${escapeHtml(line.text)}</${tag}>`);
+          pagePlainParagraphs.push(`## ${line.text}`);
+          continue;
+        }
+
+        if (isCallout) {
+          flushParagraph();
+          flushList();
+          htmlParts.push(
+            `<blockquote><p>${escapeHtml(line.text)}</p></blockquote>`
+          );
+          pagePlainParagraphs.push(`> ${line.text}`);
+          continue;
+        }
+
+        if (isBullet) {
+          flushParagraph();
+          if (listBuffer && listBuffer.type !== "ul") flushList();
+          if (!listBuffer) listBuffer = { type: "ul", items: [] };
+          listBuffer.items.push(line.text.replace(/^[-•▪▸*]\s+/, "").trim());
+          continue;
+        }
+
+        if (isNumbered) {
+          flushParagraph();
+          if (listBuffer && listBuffer.type !== "ol") flushList();
+          if (!listBuffer) listBuffer = { type: "ol", items: [] };
+          listBuffer.items.push(line.text.replace(/^\d+[.)]\s+/, "").trim());
+          continue;
+        }
+
+        // If a list was open and this line is indented continuation or a new paragraph
+        if (listBuffer) {
+          flushList();
+        }
+
+        // Start a new paragraph if there is a large vertical gap
+        if (
+          prevLine &&
+          verticalGap > Math.max(line.fontSize * 1.65, 18) &&
+          paragraphBuffer.length > 0
+        ) {
+          flushParagraph();
+        }
+
+        paragraphBuffer.push(line.text);
+      }
+
+      flushParagraph();
+      flushList();
+
+      if (pagePlainParagraphs.length > 0) {
+        allPagesPlainText.push(pagePlainParagraphs.join("\n\n"));
+      }
+    }
+  } catch {
+    // Fallback to simple unpdf text extraction if coordinate parsing fails on an unusual PDF
+    const { text } = await extractText(pdfProxy, { mergePages: false });
+    const pages = Array.isArray(text) ? text : [String(text || "")];
+    for (const p of pages) {
+      if (p.trim()) allPagesPlainText.push(p.trim());
+    }
+    return {
+      pageCount,
+      plainText: allPagesPlainText.join("\n\n"),
+      html: rawTextToStructuredHtml(cleanTitle, allPagesPlainText.join("\n\n")),
+    };
+  }
+
+  const finalPlainText = allPagesPlainText.join("\n\n").trim();
+  return {
+    pageCount,
+    plainText: finalPlainText,
+    html:
+      htmlParts.length > 1
+        ? htmlParts.join("\n")
+        : rawTextToStructuredHtml(cleanTitle, finalPlainText),
+  };
+}
+
+/**
+ * Converts raw extracted text into clean, structured HTML suitable for TipTap.
  */
 function rawTextToStructuredHtml(title: string, rawText: string): string {
   const normalized = rawText
@@ -27,7 +269,10 @@ function rawTextToStructuredHtml(title: string, rawText: string): string {
     return `<h1>${escapeHtml(title)}</h1><p></p>`;
   }
 
-  const blocks = normalized.split(/\n{2,}/);
+  const blocks = normalized.includes("\n\n")
+    ? normalized.split(/\n{2,}/)
+    : normalized.split(/\n/);
+
   const htmlParts: string[] = [`<h1>${escapeHtml(title)}</h1>`];
 
   for (const rawBlock of blocks) {
@@ -36,7 +281,6 @@ function rawTextToStructuredHtml(title: string, rawText: string): string {
 
     const lines = block.split("\n").map((l) => l.trim());
 
-    // Detect single-line headings (e.g. "1. Overview", "CHAPTER I", "Prerequisites", all-caps short headers)
     if (
       lines.length === 1 &&
       lines[0].length < 90 &&
@@ -54,13 +298,11 @@ function rawTextToStructuredHtml(title: string, rawText: string): string {
       continue;
     }
 
-    // Detect Warning / Note callout blocks
     if (/^(warning|caution|important|note|key insight)\s*:/i.test(block)) {
       htmlParts.push(`<blockquote><p>${escapeHtml(block)}</p></blockquote>`);
       continue;
     }
 
-    // Detect bullet lists
     if (lines.every((l) => /^[-•*]\s+/.test(l))) {
       const items = lines
         .map((l) => `<li>${escapeHtml(l.replace(/^[-•*]\s+/, ""))}</li>`)
@@ -69,7 +311,6 @@ function rawTextToStructuredHtml(title: string, rawText: string): string {
       continue;
     }
 
-    // Detect numbered procedural steps
     if (lines.length > 1 && lines.every((l) => /^\d+[.)]\s+/.test(l))) {
       const items = lines
         .map((l) => `<li>${escapeHtml(l.replace(/^\d+[.)]\s+/, ""))}</li>`)
@@ -78,25 +319,6 @@ function rawTextToStructuredHtml(title: string, rawText: string): string {
       continue;
     }
 
-    // Detect CLI / Code blocks
-    if (
-      lines.some(
-        (l) =>
-          l.startsWith("$ ") ||
-          l.startsWith("# ") ||
-          l.startsWith("sudo ") ||
-          l.startsWith("npm ") ||
-          l.startsWith("docker ") ||
-          l.startsWith("kubectl ") ||
-          l.includes("```")
-      )
-    ) {
-      const cleanedCode = block.replace(/```[a-z]*\n?/gi, "").trim();
-      htmlParts.push(`<pre><code>${escapeHtml(cleanedCode)}</code></pre>`);
-      continue;
-    }
-
-    // Regular paragraph (join soft line wraps within a paragraph)
     const paragraphText = lines.join(" ");
     htmlParts.push(`<p>${escapeHtml(paragraphText)}</p>`);
   }
@@ -108,7 +330,7 @@ function detectSuggestedGenre(text: string, filename: string): DocumentGenre {
   const sample = `${filename} ${text.slice(0, 4000)}`.toLowerCase();
   const techScore = (
     sample.match(
-      /\b(manual|runbook|prerequisite|install|configure|cli|command|api|warning|step-by-step|troubleshooting|parameter|server|system|deploy|protocol)\b/g
+      /\b(manual|runbook|prerequisite|install|configure|cli|command|api|warning|step-by-step|troubleshooting|parameter|server|system|deploy|protocol|guide|instructions|safety|operation|equipment|device)\b/g
     ) || []
   ).length;
   const fictionScore = (
@@ -122,13 +344,13 @@ function detectSuggestedGenre(text: string, filename: string): DocumentGenre {
     ) || []
   ).length;
 
-  if (techScore >= fictionScore && techScore >= nonfictionScore && techScore > 1) {
+  if (techScore >= fictionScore && techScore >= nonfictionScore && techScore > 0) {
     return "technical";
   }
-  if (nonfictionScore > fictionScore && nonfictionScore > 1) {
+  if (nonfictionScore > fictionScore && nonfictionScore > 0) {
     return "nonfiction";
   }
-  return "fiction";
+  return "technical";
 }
 
 export async function POST(req: NextRequest) {
@@ -157,13 +379,14 @@ export async function POST(req: NextRequest) {
     let extractedText = "";
     let structuredHtml = "";
     let pageCount: number | undefined = undefined;
+    let isPdfSource = false;
 
     if (ext === "pdf" || file.type === "application/pdf") {
-      const pdfProxy = await getDocumentProxy(new Uint8Array(arrayBuffer));
-      pageCount = pdfProxy.numPages;
-      const { text } = await extractText(pdfProxy, { mergePages: true });
-      extractedText = Array.isArray(text) ? text.join("\n\n") : text || "";
-      structuredHtml = rawTextToStructuredHtml(cleanTitle, extractedText);
+      isPdfSource = true;
+      const pdfData = await extractStructuredPdf(arrayBuffer, cleanTitle);
+      pageCount = pdfData.pageCount;
+      extractedText = pdfData.plainText;
+      structuredHtml = pdfData.html;
     } else if (
       ext === "docx" ||
       file.type ===
@@ -179,7 +402,6 @@ export async function POST(req: NextRequest) {
         ? bodyHtml
         : `<h1>${escapeHtml(cleanTitle)}</h1>\n${bodyHtml}`;
     } else if (ext === "doc" || file.type === "application/msword") {
-      // Legacy .doc / RTF fallback: extract printable UTF-8/ASCII runs
       const rawLatin = buffer.toString("utf8");
       const printableMatches =
         rawLatin.match(/[\x20-\x7E\r\n\t]{12,}/g) || [];
@@ -204,7 +426,6 @@ export async function POST(req: NextRequest) {
         .replace(/\s+/g, " ")
         .trim();
     } else {
-      // Plain text (.txt, .log, .rst, etc.)
       extractedText = buffer.toString("utf8");
       structuredHtml = rawTextToStructuredHtml(cleanTitle, extractedText);
     }
@@ -219,6 +440,7 @@ export async function POST(req: NextRequest) {
       title: cleanTitle,
       fileName,
       fileType: ext.toUpperCase() || "DOC",
+      isPdfSource,
       pageCount,
       wordCount,
       suggestedGenre,

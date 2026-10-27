@@ -51,6 +51,7 @@ interface CopilotSidebarProps {
   selectedEditorText: string;
   onApplyDraft: (markdown: string, mode: "append" | "insert" | "replace") => void;
   onUndoDraft: () => void;
+  onExportPdf?: (markdownOverride?: string) => void;
   initialPromptToRun?: string;
   onClearInitialPrompt?: () => void;
 }
@@ -156,6 +157,7 @@ export function CopilotSidebar({
   selectedEditorText,
   onApplyDraft,
   onUndoDraft,
+  onExportPdf,
   initialPromptToRun,
   onClearInitialPrompt,
 }: CopilotSidebarProps) {
@@ -509,6 +511,21 @@ export function CopilotSidebar({
                   >
                     <span>⟳ Replace Whole Doc</span>
                   </button>
+
+                  {onExportPdf && (
+                    <button
+                      type="button"
+                      disabled={isStreaming || !streamedMarkdown.trim()}
+                      onClick={() => {
+                        onApplyDraft(streamedMarkdown, "replace");
+                        onExportPdf(streamedMarkdown);
+                        setAppliedBanner("Applied & exported as PDF (.pdf)");
+                      }}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 transition-all disabled:opacity-40 cursor-pointer"
+                    >
+                      <span>⬇ Replace & Save PDF</span>
+                    </button>
+                  )}
 
                   <button
                     type="button"
